@@ -31,8 +31,6 @@ from .deepspeed_utils import (
 ModelOptimPair = Tuple[nn.Module, Optimizer]
 ModelOrModelOptimPair = Union[nn.Module, ModelOptimPair]
 
-from transformers import LlamaForCausalLM
-
 class DeepspeedStrategy(ABC):
     """
     The strategy for training with Accelerator.
