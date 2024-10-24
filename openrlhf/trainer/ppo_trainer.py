@@ -144,8 +144,9 @@ class PPOTrainer(ABC):
             import wandb
 
             self._wandb = wandb
-            if not wandb.api.api_key:
-                wandb.login(key=strategy.args.use_wandb)
+            # if not wandb.api.api_key:
+            #     wandb.login(key=strategy.args.use_wandb)
+            # dryrun模式，不login，先存储到本地。
             wandb.init(
                 entity=strategy.args.wandb_org,
                 project=strategy.args.wandb_project,
