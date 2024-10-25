@@ -1,3 +1,5 @@
+import json
+
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from .utils import exist_and_not_none
@@ -44,13 +46,16 @@ class PromptDataset(Dataset):
             apply_chat_template = self.tokenizer.apply_chat_template
 
         self.prompts = []
+        self.original =[]
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
             prompt = preprocess_data(data, input_template, input_key, apply_chat_template)
             self.prompts.append(prompt)
+            self.original.append(json.dumps(data,ensure_ascii=False)) # cheat collate function
+
 
     def __len__(self):
         length = len(self.prompts)
         return length * self.n_samples_per_prompt
 
     def __getitem__(self, idx):
-        return self.prompts[idx // self.n_samples_per_prompt]
+        return {'prompt':self.prompts[idx // self.n_samples_per_prompt],'original':self.original[idx // self.n_samples_per_prompt]}

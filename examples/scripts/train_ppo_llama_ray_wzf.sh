@@ -33,7 +33,7 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
    --init_kl_coef 0.01 \
-   --prompt_data /home/wangzefan/data/OpenRLHF/datasets/UltraInteract_pair/train_ppo.jsonl \
+   --prompt_data /home/wangzefan/data/OpenRLHF/datasets/UltraInteract_pair_math/train_ppo.jsonl \
    --input_key context_messages \
    --apply_chat_template \
    --normalize_reward \
@@ -41,6 +41,7 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --flash_attn \
    --gradient_checkpointing \
    --use_wandb True \
+   --reward_shaping_function qwen_math_ui \
 #   --colocate_critic_reward \
 #   --colocate_actor_ref \
 #   --ref_reward_offload \

@@ -57,8 +57,14 @@ def compute_reward(
 
 
 def log_probs_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    log_probs = F.log_softmax(logits, dim=-1)
-    log_probs_labels = log_probs.gather(dim=-1, index=labels.unsqueeze(-1))
+    # 这个函数制造了主要的显存瓶颈，大部分超显存都是在这里发生的。这里的显存开销来自于复制了一份logits矩阵，这个矩阵的显存开销太大。由于这个瓶颈只是存储瓶颈而不是速度瓶颈，所以在这里把softmax改为串行完成，每次一个batch。
+    # 假定输入维数总是[Batch, Sequence, Vocab]
+    log_probs_labels_list=[]
+    for logit, label in zip(logits, labels):
+        log_prob = F.log_softmax(logit, dim=-1)
+        log_probs_label = log_prob.gather(dim=-1, index=label.unsqueeze(-1))
+        log_probs_labels_list.append(log_probs_label)
+    log_probs_labels = torch.stack(log_probs_labels_list, dim=0)
     return log_probs_labels.squeeze(-1)
 
 

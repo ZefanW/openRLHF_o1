@@ -273,6 +273,7 @@ if __name__ == "__main__":
     parser.add_argument("--init_kl_coef", type=float, default=0.01, help="KL penalty in PPO")
     parser.add_argument("--aux_loss_coef", type=float, default=0, help="MoE balancing loss")
     parser.add_argument("--adam_betas", type=float, nargs=2, default=(0.9, 0.95), help="Betas for Adam optimizer")
+    parser.add_argument('--reward_shaping_function',type=str, default=None, help='Reward shaping function name in openrlhf/models/reward_shaping. empty string means no shaping function')
 
     #  Models
     parser.add_argument("--pretrain", type=str, default=None, help="HF model name or path")
