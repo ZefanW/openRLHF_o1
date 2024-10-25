@@ -1,3 +1,5 @@
+import importlib
+
 import math
 import os.path
 from abc import ABC
@@ -144,8 +146,9 @@ class PPOTrainer(ABC):
             import wandb
 
             self._wandb = wandb
-            if not wandb.api.api_key:
-                wandb.login(key=strategy.args.use_wandb)
+            # if not wandb.api.api_key:
+            #     wandb.login(key=strategy.args.use_wandb)
+            # dryrun模式，不login，先存储到本地。
             wandb.init(
                 entity=strategy.args.wandb_org,
                 project=strategy.args.wandb_project,
@@ -182,6 +185,12 @@ class PPOTrainer(ABC):
         self.prompts_dataloader = prompts_dataloader
         self.pretrain_dataloader = pretrain_dataloader
 
+        # for reward shaping, import the reward function
+        reward_shaping_function= getattr(self.args, 'reward_shaping_function', None)
+        if reward_shaping_function:
+            reward_function_builder=getattr(importlib.import_module('openrlhf.models.reward_shaping'),reward_shaping_function)
+            reward_shaping_function_instance=reward_function_builder(tokenizer=self.tokenizer)
+
         # Restore step and start_epoch
         steps = consumed_samples // args.rollout_batch_size * update_timesteps + 1
         start_episode = consumed_samples // args.rollout_batch_size // num_rollouts_per_episodes
@@ -198,9 +207,16 @@ class PPOTrainer(ABC):
                 disable=not self.strategy.is_rank_0(),
             )
 
-            for rand_prompts in self.prompts_dataloader:
+            for rand_inputs in self.prompts_dataloader:
+                if type(rand_inputs) is dict:
+                    rand_prompts=rand_inputs['prompt']
+                    rand_originals=rand_inputs['original']
+                    # print(rand_originals)
+                else:
+                    rand_prompts=rand_inputs
+                    rand_originals=None
                 # print("rand_prompts", rand_prompts, self.generate_kwargs)
-                experience = self.experience_maker.make_experience(rand_prompts, **self.generate_kwargs)
+                experience = self.experience_maker.make_experience(rand_prompts, original_data=rand_originals, reward_function=reward_shaping_function_instance, **self.generate_kwargs)
                 # print prompt/answer in each update step
                 if steps % update_timesteps == 0:
                     output = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=True)

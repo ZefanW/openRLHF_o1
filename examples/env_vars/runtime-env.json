@@ -1,0 +1,18 @@
+{
+  "env_vars": {
+    "CONDA_PREFIX": "/home/wangzefan/anaconda3/envs/openrlhf",
+    "PATH": "/home/wangzefan/anaconda3/envs/openrlhf:${PATH}",
+    "LD_LIBRARY_PATH": "/home/wangzefan/anaconda3/envs/openrlhf/lib:${LD_LIBRARY_PATH}",
+    "PYTHONPATH": "/home/wangzefan/anaconda3/envs/openrlhf/lib/python3.10/site-packages:${PYTHONPATH}",
+    "WANDB_MODE": "offline",
+    "WANDB_API_KEY": "194ba8b74c01d7f88fbf18db8f53206e24b2d46a",
+    "NCCL_P2P_DISABLE": "0"
+  },
+  "setup_commands": [
+    "source /home/wangzefan/anaconda3/envs/openrlhf/bin/activate"
+  ],
+  "working_dir": "/home/wangzefan/data/OpenRLHF",
+  "excludes": [
+    "*"
+  ]
+}

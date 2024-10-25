@@ -59,6 +59,21 @@ def train(args):
         pg = placement_group(bundles, strategy="STRICT_SPREAD")
         ray.get(pg.ready())
 
+    # init vLLM engine for text generation
+    vllm_engines = None
+    if args.vllm_num_engines is not None and args.vllm_num_engines > 0:
+        max_len = args.max_len if args.max_len else args.prompt_max_len + args.generate_max_len
+        vllm_engines = create_vllm_engines(
+            args.vllm_num_engines,
+            args.vllm_tensor_parallel_size,
+            args.pretrain,
+            args.seed,
+            args.enable_prefix_caching,
+            max_len,
+        )
+        # simple test
+        print(ray.get(vllm_engines[0].generate.remote('hello')))
+
     # NOTE(wuxibin): Why don't we allocate 0.5 gpu for each actor when colocate models?
     # Say we have 1 node with 4 GPUs, and num_gpus_per_node for each model is 4.
     # If we allocate 0.5 gpu for both actor and ref model, then gpu allocation is
@@ -132,18 +147,7 @@ def train(args):
         for reward_model, reward_pretrain in zip(reward_models, reward_pretrains):
             refs.extend(reward_model.async_init_model_from_pretrained(strategy, reward_pretrain))
 
-    # init vLLM engine for text generation
-    vllm_engines = None
-    if args.vllm_num_engines is not None and args.vllm_num_engines > 0:
-        max_len = args.max_len if args.max_len else args.prompt_max_len + args.generate_max_len
-        vllm_engines = create_vllm_engines(
-            args.vllm_num_engines,
-            args.vllm_tensor_parallel_size,
-            args.pretrain,
-            args.seed,
-            args.enable_prefix_caching,
-            max_len,
-        )
+
 
     # critic scheduler initialization depends on max_step, so we have to init critic after actor
     # TODO: use first reward model as critic model
@@ -269,6 +273,7 @@ if __name__ == "__main__":
     parser.add_argument("--init_kl_coef", type=float, default=0.01, help="KL penalty in PPO")
     parser.add_argument("--aux_loss_coef", type=float, default=0, help="MoE balancing loss")
     parser.add_argument("--adam_betas", type=float, nargs=2, default=(0.9, 0.95), help="Betas for Adam optimizer")
+    parser.add_argument('--reward_shaping_function',type=str, default=None, help='Reward shaping function name in openrlhf/models/reward_shaping. empty string means no shaping function')
 
     #  Models
     parser.add_argument("--pretrain", type=str, default=None, help="HF model name or path")

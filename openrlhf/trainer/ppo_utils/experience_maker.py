@@ -235,7 +235,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         self.vllm_engines = vllm_engines
 
     @torch.no_grad()
-    def make_experience(self, prompts: Union[str, List[str]], **generate_kwargs) -> Experience:
+    def make_experience(self, prompts: Union[str, List[str]], original_data=None, reward_function=None,**generate_kwargs) -> Experience:
         self.actor.eval()
         device = torch.cuda.current_device()
 
@@ -283,6 +283,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 r = remote_rm_fn_ray.remote(rm, queries=queries)
                 r_refs.append(r)
 
+
+
+
         # log probs
         start = time.time()
         action_log_probs = self.actor(sequences, num_actions, attention_mask)
@@ -294,9 +297,16 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         wait_time = time.time() - start
 
         base_action_log_probs, value, rewards = ref_values[0], ref_values[1], ref_values[2:]
+
+
+
         base_action_log_probs, value = base_action_log_probs.to(device), value.to(device)
         rewards = [r.to(device) for r in rewards]
         r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+
+        # if reward function is not None, call it. This should adapt to multi reward model.
+        if reward_function is not None:
+            r = reward_function(r, sequences, attention_mask, original_data)
 
         # avoid CUDA OOM when colocate models
         if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:

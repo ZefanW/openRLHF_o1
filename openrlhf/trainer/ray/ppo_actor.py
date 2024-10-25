@@ -268,6 +268,7 @@ class ActorModelRayActor(BasePPORole):
         args = self.strategy.args
 
         # prepare datasets
+        # to enable reward shaping, we need the dataloader to return all entries in the dataset as text with the same sampling strategy as the prompt dataloader
         prompts_data = blending_datasets(
             args.prompt_data,
             args.prompt_data_probs,
@@ -301,7 +302,7 @@ class ActorModelRayActor(BasePPORole):
                 pretrain_max_len,
                 strategy,
                 pretrain_mode=True,
-            )
+            ) # 加pretrain data是没有apply chattemplate的
             self.pretrain_dataloader = itertools.cycle(
                 iter(
                     strategy.setup_dataloader(
