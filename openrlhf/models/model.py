@@ -9,7 +9,8 @@ from peft.tuners.lora import LoraLayer
 from transformers import AutoConfig, AutoModel, BitsAndBytesConfig
 from transformers.deepspeed import HfDeepSpeedConfig
 from transformers.dynamic_module_utils import get_class_from_dynamic_module
-
+from openrlhf.evaluation_utils.parallel_evaluation import parallel_eval
+import pandas as pd
 from openrlhf.utils.logging_utils import init_logger
 
 from .packing_utils import patch_for_block_diag_attn

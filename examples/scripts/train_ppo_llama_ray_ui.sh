@@ -1,27 +1,29 @@
 set -x 
-
+ray start --head --node-ip-address 0.0.0.0 --num-gpus 8
 ray job submit --address="http://127.0.0.1:8265" \
-   --runtime-env-json='{"working_dir": "/home/wangxiaorong/workspace/o1/OpenRLHF"}' \
+   --runtime-env-json='{"working_dir": "/home/test/test05/cgq/openRLHF_o1"}' \
    -- python3 -m openrlhf.cli.train_ppo_ray \
    --ref_num_nodes 1 \
-   --ref_num_gpus_per_node 2 \
+   --ref_num_gpus_per_node 4 \
    --reward_num_nodes 1 \
    --reward_num_gpus_per_node 2 \
    --critic_num_nodes 1 \
    --critic_num_gpus_per_node 2 \
    --actor_num_nodes 1 \
-   --actor_num_gpus_per_node 2 \
-   --vllm_num_engines 2 \
-   --vllm_tensor_parallel_size 2 \
+   --actor_num_gpus_per_node 4 \
+   --vllm_num_engines 1 \
+   --vllm_tensor_parallel_size 1 \
    --colocate_critic_reward \
    --colocate_actor_ref \
-   --pretrain /home/wangxiaorong/workspace/o1/checkpoints/llama3-8b-sft-ui \
-   --reward_pretrain /home/wangxiaorong/workspace/o1/checkpoints/Eurus-RM-7b \
-   --save_path /home/wangxiaorong/workspace/o1/trained_llms/llama3-8b-eurus-7b-ppo \
-   --micro_train_batch_size 8 \
+   --ref_reward_offload \
+   --pretrain /home/test/test05/ylf/models/llama3.1-8b-instruct \
+   --reward_pretrain /home/test/test05/ylf/models/skywork-reward-llama-3.1-8b \
+   --save_path /home/test/test05/cgq/models/openrlhf/llama3-8b-skywork-ppo \
+   --value_head_prefix score \
+   --micro_train_batch_size 2 \
    --train_batch_size 128 \
    --micro_rollout_batch_size 16 \
-   --rollout_batch_size 1024 \
+   --rollout_batch_size 256 \
    --max_samples 219522 \
    --max_epochs 1 \
    --prompt_max_len 1024 \
@@ -31,8 +33,8 @@ ray job submit --address="http://127.0.0.1:8265" \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
    --init_kl_coef 0.01 \
-   --prompt_data /home/wangxiaorong/workspace/o1/datasets/UltraInteract_pair/train_ppo.jsonl \
-   --input_key context_messages \
+   --prompt_data /home/test/test05/whb/data/o1_data/math/o1_mathqa.jsonl \
+   --input_key prompt \
    --apply_chat_template \
    --normalize_reward \
    --adam_offload \
