@@ -16,11 +16,11 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --actor_num_gpus_per_node 2 \
    --vllm_num_engines 2 \
    --vllm_tensor_parallel_size 1 \
-   --save_steps 500 \
-   --ckpt_path ./jobs/ppo-rs/ckpt \
+   --save_steps -1 \
+   --logging_steps 1 \
    --pretrain /data/public/wangshuo/LongContext/model/meta-llama/Llama3.1-8b-instruct \
    --reward_pretrain /home/wangzefan/huggingface/Skywork-Reward-Llama-3.1-8B \
-   --save_path ./jobs/ppo-rs \
+   --save_path /home/wangzefan/data/OpenRLHF/jobs/llama-ppo-rs-ui-math-only \
    --micro_train_batch_size 8 \
    --train_batch_size 128 \
    --micro_rollout_batch_size 16 \
@@ -32,9 +32,9 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --bf16 \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
-   --init_kl_coef 0.01 \
+   --init_kl_coef 0.1 \
    --prompt_data /home/wangzefan/data/OpenRLHF/datasets/UltraInteract_pair_math/train_ppo.jsonl \
-   --input_key context_messages \
+   --input_key trajectory \
    --apply_chat_template \
    --normalize_reward \
    --adam_offload \
@@ -53,3 +53,11 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
 
 # vllm_num_engines表示总共需要启动多少个engine。每个engine占用的gpu数量等同于tensor_parallel_size。
 # 启动的vllm一般是不退出的。
+
+# save_steps决定global step为多少的整数倍时进行ckpt存储，其存储目录为ckpt_path
+# 最终ckpt存储在save_path
+# 慎用相对路径，有时候会出问题
+
+# wandb的存储路径依靠全局变量指定
+
+# prm的用法：需要指定触发prm的字符串（比如Step ），然后指定触发prm计算的特殊token。prm同样存在hack问题，默认配合reward shaping修正一下reward。

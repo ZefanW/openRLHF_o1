@@ -3,8 +3,8 @@ import pandas as pd
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from tqdm.asyncio import tqdm
-from code_util import evaluate_code
-from math_util import evaluate_math
+from .code_util import evaluate_code
+from .math_util import evaluate_math
 # from code_util import evaluate_code
 # from math_util import evaluate_math
 

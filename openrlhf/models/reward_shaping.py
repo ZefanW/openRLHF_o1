@@ -3,6 +3,7 @@ import json
 # reward shaping functions，每一个函数都接收prompt, completion, evidence, prompt_token, completion_token作为参数，
 # call函数每次载入一个完整数据（必须是完整数据，所有key都要保留），然后自己编写具体逻辑。
 import torch
+from openrlhf.evaluation_utils.parallel_evaluation import process_completion
 def qwen_math_ui(*args, **kwargs):
     class QwenMath:
         """
@@ -14,8 +15,9 @@ def qwen_math_ui(*args, **kwargs):
         def __init__(self, *args, **kwargs):
             self.tokenizer=kwargs['tokenizer']
             self.math_keys=['Math_CoT']
+            self.code_keys=[]
 
-        def __call__(self, r, sequences, attention_mask, original_data):
+        def __call__(self, r, sequences, attention_mask, original_data, num_actions):
             # r是一维向量，在cuda上，shape=(micro_rollout_batch_size)。这么看来openRLHF默认不能做PRM
             reward_shaped=torch.zeros_like(r)
             for i, (r_, sequence_, attention_mask_, original_data_) in enumerate(zip(r, sequences, attention_mask, original_data)):
@@ -23,14 +25,18 @@ def qwen_math_ui(*args, **kwargs):
                 # print(original_data_dict)
                 chosen=original_data_dict['chosen']
                 success=0.5
-                if chosen.__contains__('Answer:\n\\boxed{'):
-                    chosen_answer=chosen.split('Answer:\n\\boxed{')[-1].split('}')[0]
-                    model_sequence=self.tokenizer.decode(sequence_[attention_mask_==1][-50:],skip_special_tokens=True)
-                    # print(model_sequence)
-                    if model_sequence.__contains__(chosen_answer):
+                model_sequence = self.tokenizer.decode(sequence_[-num_actions:], skip_special_tokens=True)
+                # print(model_sequence)
+                if original_data_dict['task'] in self.math_keys:
+                # if chosen.__contains__('Answer:\n\\boxed{'):
+                    reference=chosen.split('Answer:\n\\boxed{')[-1].split('}')[0]
+                    is_correct, format_correctness, extracted_model_output= process_completion(model_sequence, 'math',reference)
+                    if is_correct:
                         success=1
                     else:
                         success=0
+                elif original_data_dict['task'] in self.code_keys:
+                    raise NotImplementedError
 
                 reward_shaped[i]=torch.nn.functional.sigmoid(r_*0.5)+success-1
 

@@ -156,12 +156,16 @@ class PPOTrainer(ABC):
                 name=strategy.args.wandb_run_name,
                 config=strategy.args.__dict__,
                 reinit=True,
+                mode='offline'
             )
+            assert os.getenv('WANDB_MODE')=='offline'
 
             wandb.define_metric("train/global_step")
             wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
             wandb.define_metric("eval/epoch")
             wandb.define_metric("eval/*", step_metric="eval/epoch", step_sync=True)
+
+            print('wandb is successfully initialized')
 
     def fit(
         self,
