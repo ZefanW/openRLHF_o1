@@ -120,20 +120,51 @@ class NaiveExperienceMaker(ABC):
         self.initial_model.eval()
         if self.reward_model is not None:
             self.reward_model.eval()
-
-        # generate seq
-        inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
+        
+        # # generate seq
+        input_prompts = [p["prompt"] for p in prompts]
+        inputs = self.tokenize_fn(input_prompts, self.prompt_max_len, device="cuda")
         sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
+        
         num_actions = action_mask.size(1)
+        '''
+        # # log probs
+        # action_log_probs = self.actor(sequences, num_actions, attention_mask)
 
-        # log probs
-        action_log_probs = self.actor(sequences, num_actions, attention_mask)
+        # # init log probs
+        # base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
 
-        # init log probs
-        base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
+        # # values
+        # value = self.critic(sequences, action_mask, attention_mask)
+        '''
+        all_action_log_probs = []
+        all_base_action_log_probs = []
+        all_values = []
 
-        # values
-        value = self.critic(sequences, action_mask, attention_mask)
+        batch_size = 4  # Define your batch size
+
+        # Process log probs in batches
+        for i in range(0, sequences.size(0), batch_size):
+            batch_sequences = sequences[i:i + batch_size]
+            batch_attention_mask = attention_mask[i:i + batch_size]
+            batch_action_mask = action_mask[i:i + batch_size]
+
+            # log probs
+            action_log_probs = self.actor(batch_sequences, num_actions, batch_attention_mask)
+            all_action_log_probs.append(action_log_probs)
+
+            # init log probs
+            base_action_log_probs = self.initial_model(batch_sequences, num_actions, batch_attention_mask)
+            all_base_action_log_probs.append(base_action_log_probs)
+
+            # values
+            value = self.critic(batch_sequences, batch_action_mask, batch_attention_mask)
+            all_values.append(value)
+
+        # Concatenate all batched results
+        action_log_probs = torch.cat(all_action_log_probs, dim=0)
+        base_action_log_probs = torch.cat(all_base_action_log_probs, dim=0)
+        value = torch.cat(all_values, dim=0)
 
         # rewards
         if self.remote_rm_url is not None:
@@ -241,18 +272,20 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         # generate sequence
         start = time.time()
-        sequences, attention_mask, action_mask = (
-            self._generate_local(prompts, **generate_kwargs)
+        input_prompts = [p["prompt"] for p in prompts]
+        sequences, attention_mask, action_mask, outputs = (
+            self._generate_local(input_prompts, **generate_kwargs)
             if self.vllm_engines is None
-            else self._generate_vllm(prompts, **generate_kwargs)
+            else self._generate_vllm(input_prompts, **generate_kwargs)
         )
         generate_time = time.time() - start
 
         num_actions = action_mask.size(1)
-        sequences_cpu, attention_mask_cpu, action_mask_cpu = (
+        sequences_cpu, attention_mask_cpu, action_mask_cpu, outputs_cpu = (
             sequences.to("cpu"),
             attention_mask.to("cpu"),
             action_mask.to("cpu"),
+            outputs.to("cpu"),
         )
 
         # init log probs
@@ -278,9 +311,11 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 r_refs.append(rm.forward.remote(sequences_cpu, attention_mask_cpu))
         else:
             # remote RM
+            queries = self.tokenizer.batch_decode(sequences_cpu, skip_special_tokens=False)
+            completions = self.tokenizer.batch_decode(outputs_cpu, skip_special_tokens=False)
+            prompts = [dict(p, completion=c) for p, c in zip(prompts, completions)]
             for rm in self.remote_rm_url:
-                queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
-                r = remote_rm_fn_ray.remote(rm, queries=queries)
+                r = remote_rm_fn_ray.remote(rm, queries=queries, prompts=prompts)
                 r_refs.append(r)
 
 
@@ -424,7 +459,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         sequences, attention_mask, action_mask = self.actor.process_sequences(
             sequences, max_input_len, eos_token_id, pad_token_id
         )
-        return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda")
+        outputs = sequences[:, max_input_len:]
+        return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda"), outputs.to("cuda")
 
     def flush(self):
         "Ensure all experience has been send to critic"
