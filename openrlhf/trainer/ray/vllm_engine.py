@@ -43,7 +43,7 @@ class LLMRayActor:
 
             RayWorkerWrapperPath.RayWorkerWrapper = RayWorkerWrapper
 
-        self.llm = vllm.LLM(*args, **kwargs)
+        self.llm = vllm.LLM(gpu_memory_utilization=0.8, *args, **kwargs)
 
     def generate(self, *args, **kwargs):
         return self.llm.generate(*args, **kwargs)

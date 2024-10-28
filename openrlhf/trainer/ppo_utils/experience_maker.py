@@ -235,57 +235,84 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         # generate sequence
         start = time.time()
-        sequences, attention_mask, action_mask = (
+        sequences_all, attention_mask_all, action_mask_all = (
             self._generate_local(prompts, **generate_kwargs)
             if self.vllm_engines is None
             else self._generate_vllm(prompts, **generate_kwargs)
         )
         generate_time = time.time() - start
 
-        num_actions = action_mask.size(1)
-        sequences_cpu, attention_mask_cpu, action_mask_cpu = (
-            sequences.to("cpu"),
-            attention_mask.to("cpu"),
-            action_mask.to("cpu"),
+        num_actions = action_mask_all.size(1)
+        sequences_cpu_all, attention_mask_cpu_all, action_mask_cpu_all = (
+            sequences_all.to("cpu"),
+            attention_mask_all.to("cpu"),
+            action_mask_all.to("cpu"),
         )
 
-        # init log probs
-        base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu, num_actions, attention_mask_cpu)
+        # 防止huggingface inference成为micro rollout batch size的瓶颈，因此在这里把vllm的推理结果切成micro train batch size
+        # 后面所有模型推理过程都遵循相同设定，
 
-        # values
-        value_ref = self.critic.forward.remote(sequences_cpu, action_mask_cpu, attention_mask_cpu)
+        chunk_size=generate_kwargs['micro_train_batch_size'] if 'micro_train_batch_size' in generate_kwargs else len(prompts)
 
-        # avoid CUDA OOM when colocate models
-        if self.strategy.args.colocate_critic_reward:
-            ray.get([value_ref])
-            ray.get([self.critic.empty_cache.remote()])
 
-        if self.strategy.args.colocate_actor_ref:
-            ray.get([base_action_log_probs_ref])
-            ray.get([self.initial_model.empty_cache.remote()])
+        ref_values_list=[]
+        action_log_probs_list=[]
 
-        # rewards
-        r_refs = []
-        # support remote RM API with ray
-        if not self.remote_rm_url:
-            for rm in self.reward_model:
-                r_refs.append(rm.forward.remote(sequences_cpu, attention_mask_cpu))
-        else:
-            # remote RM
-            for rm in self.remote_rm_url:
-                queries = self.tokenizer.batch_decode(sequences.cpu(), skip_special_tokens=False)
-                r = remote_rm_fn_ray.remote(rm, queries=queries)
-                r_refs.append(r)
+        for i in range(0, sequences_all.size(0), chunk_size):
+            sequences_cpu_chunk=sequences_cpu_all[i:i+chunk_size]
+            attention_mask_cpu_chunk=attention_mask_cpu_all[i:i+chunk_size]
+            action_mask_cpu_chunk=action_mask_cpu_all[i:i+chunk_size]
+            sequences_chunk=sequences_all[i:i+chunk_size]
+            attention_mask_chunk = attention_mask_all[i:i + chunk_size]
 
-        # log probs
-        start = time.time()
-        action_log_probs = self.actor(sequences, num_actions, attention_mask)
-        actor_time = time.time() - start
+            # init log probs
+            base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu_chunk, num_actions, attention_mask_cpu_chunk)
 
-        # wait initial/critic/reward model done
-        start = time.time()
-        ref_values = ray.get([base_action_log_probs_ref, value_ref] + r_refs)
-        wait_time = time.time() - start
+            # values
+            value_ref = self.critic.forward.remote(sequences_cpu_chunk, action_mask_cpu_chunk, attention_mask_cpu_chunk)
+
+
+            # avoid CUDA OOM when colocate models
+            if self.strategy.args.colocate_critic_reward:
+                ray.get([value_ref])
+                ray.get([self.critic.empty_cache.remote()])
+
+            if self.strategy.args.colocate_actor_ref:
+                ray.get([base_action_log_probs_ref])
+                ray.get([self.initial_model.empty_cache.remote()])
+
+            # rewards
+            r_refs = []
+            # support remote RM API with ray
+            if not self.remote_rm_url:
+                for rm in self.reward_model:
+                    r_refs.append(rm.forward.remote(sequences_cpu_chunk, attention_mask_cpu_chunk))
+            else:
+                # remote RM
+                for rm in self.remote_rm_url:
+                    queries = self.tokenizer.batch_decode(sequences_all.cpu(), skip_special_tokens=False)
+                    r = remote_rm_fn_ray.remote(rm, queries=queries)
+                    r_refs.append(r)
+
+            # log probs
+            start = time.time()
+            action_log_probs_chunk = self.actor(sequences_chunk, num_actions, attention_mask_chunk).cpu()
+            actor_time = time.time() - start
+
+            # wait initial/critic/reward model done
+            start = time.time()
+            ref_values_chunk = ray.get([base_action_log_probs_ref, value_ref] + r_refs)
+            wait_time = time.time() - start
+
+            # collect all results
+            ref_values_list.append(ref_values_chunk)
+            action_log_probs_list.append(action_log_probs_chunk)
+
+        # concat all results
+        ref_values=[]
+        for i in range(len(ref_values_list[0])):
+            ref_values.append(torch.cat([ref_values_list_item[i] for ref_values_list_item in ref_values_list], dim=0))
+        action_log_probs=torch.cat(action_log_probs_list, dim=0).to(device)
 
         base_action_log_probs, value, rewards = ref_values[0], ref_values[1], ref_values[2:]
         base_action_log_probs, value = base_action_log_probs.to(device), value.to(device)
@@ -294,7 +321,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         # if reward function is not None, call it. This should adapt to multi reward model.
         if reward_function is not None:
-            r = reward_function(r, sequences, attention_mask, original_data,num_actions)
+            r = reward_function(r, sequences_all, attention_mask_all, original_data,num_actions)
+
         # avoid CUDA OOM when colocate models
         if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:
             ray.get([self.reward_model[0].empty_cache.remote()])
@@ -307,38 +335,41 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             self.kl_ctl.value,
             action_log_probs,
             base_action_log_probs,
-            action_mask=action_mask,
+            action_mask=action_mask_all,
         )
         advantage, returns = self.get_advantages_and_returns(
             value,
             reward,
-            action_mask,
+            action_mask_all,
             generate_kwargs["gamma"],
             generate_kwargs["lambd"],
         )
 
         info = {
-            "kl": masked_mean(kl, action_mask, dim=-1),
+            "kl": masked_mean(kl, action_mask_all, dim=-1),
             "reward": r,
-            "return": reward.sum(dim=-1),
-            "response_length": action_mask.float().sum(dim=-1),
-            "total_length": attention_mask.float().sum(dim=-1),
+            "reward_orm": 0.,
+            "reward_prm": 0.,
+            "reward_success": 0.,
+            "return": reward.sum(dim=-1), # 训练过程中记录的return是r-kl的结果，随着训练过程而逐渐增长没有问题。
+            "response_length": action_mask_all.float().sum(dim=-1),
+            "total_length": attention_mask_all.float().sum(dim=-1),
         }
 
-        if self.strategy.args.perf:
+        if self.strategy.args.perf: # 一般不用
             batch_size = 1 if isinstance(prompts, str) else len(prompts)
             info["generate_time"] = torch.full((batch_size,), generate_time, device=device)
             info["actor_time"] = torch.full((batch_size,), actor_time, device=device)
             info["wait_time"] = torch.full((batch_size,), wait_time, device=device)
 
         experience = Experience(
-            sequences,
+            sequences_all,
             action_log_probs,
             value,
             returns,
             advantage,
-            attention_mask,
-            action_mask,
+            attention_mask_all,
+            action_mask_all,
             info,
         )
 

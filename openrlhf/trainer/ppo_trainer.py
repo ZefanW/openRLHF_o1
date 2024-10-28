@@ -220,7 +220,7 @@ class PPOTrainer(ABC):
                     rand_prompts=rand_inputs
                     rand_originals=None
                 # print("rand_prompts", rand_prompts, self.generate_kwargs)
-                experience = self.experience_maker.make_experience(rand_prompts, original_data=rand_originals, reward_function=reward_shaping_function_instance, **self.generate_kwargs)
+                experience = self.experience_maker.make_experience(rand_prompts, original_data=rand_originals, reward_function=reward_shaping_function_instance, micro_train_batch_size=self.micro_train_batch_size,**self.generate_kwargs)
                 # print prompt/answer in each update step
                 if steps % update_timesteps == 0:
                     output = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=True)

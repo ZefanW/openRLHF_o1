@@ -20,14 +20,14 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --logging_steps 1 \
    --pretrain /data/public/wangshuo/LongContext/model/meta-llama/Llama3.1-8b-instruct \
    --reward_pretrain /home/wangzefan/huggingface/Skywork-Reward-Llama-3.1-8B \
-   --save_path /home/wangzefan/data/OpenRLHF/jobs/llama-ppo-rs-ui-math-only \
+   --save_path /home/wangzefan/data/OpenRLHF/jobs/llama-ppo-rs-ui-math-only-001kl \
    --micro_train_batch_size 8 \
    --train_batch_size 128 \
-   --micro_rollout_batch_size 16 \
+   --micro_rollout_batch_size 128 \
    --rollout_batch_size 1024 \
    --max_epochs 1 \
    --prompt_max_len 1024 \
-   --generate_max_len 1536 \
+   --generate_max_len 2048 \
    --zero_stage 3 \
    --bf16 \
    --actor_learning_rate 5e-7 \
