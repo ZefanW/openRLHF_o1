@@ -281,7 +281,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
                 ray.get([base_action_log_probs_ref])
                 ray.get([self.initial_model.empty_cache.remote()])
 
-            # rewards
+            # rewards, 可以叠加多个reward model，纯粹根据返回值区分是prm还是orm。gt部分总是塞进reward shaping中。
             r_refs = []
             # support remote RM API with ray
             if not self.remote_rm_url:
@@ -348,9 +348,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         info = {
             "kl": masked_mean(kl, action_mask_all, dim=-1),
             "reward": r,
-            "reward_orm": 0.,
-            "reward_prm": 0.,
-            "reward_success": 0.,
+            "reward_rm": torch.zeros_like(r), # TODO: wandb部分需要支持不止一个rm的情况
+            "reward_gt": torch.zeros_like(r),
             "return": reward.sum(dim=-1), # 训练过程中记录的return是r-kl的结果，随着训练过程而逐渐增长没有问题。
             "response_length": action_mask_all.float().sum(dim=-1),
             "total_length": attention_mask_all.float().sum(dim=-1),

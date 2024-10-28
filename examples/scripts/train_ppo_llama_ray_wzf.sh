@@ -32,7 +32,7 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --bf16 \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
-   --init_kl_coef 0.1 \
+   --init_kl_coef 0.01 \
    --prompt_data /home/wangzefan/data/OpenRLHF/datasets/UltraInteract_pair_math/train_ppo.jsonl \
    --input_key trajectory \
    --apply_chat_template \
