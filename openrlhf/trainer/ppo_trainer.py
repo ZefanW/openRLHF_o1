@@ -156,12 +156,16 @@ class PPOTrainer(ABC):
                 name=strategy.args.wandb_run_name,
                 config=strategy.args.__dict__,
                 reinit=True,
+                mode='offline'
             )
+            assert os.getenv('WANDB_MODE')=='offline'
 
             wandb.define_metric("train/global_step")
             wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
             wandb.define_metric("eval/epoch")
             wandb.define_metric("eval/*", step_metric="eval/epoch", step_sync=True)
+
+            print('wandb is successfully initialized')
 
     def fit(
         self,
@@ -216,7 +220,7 @@ class PPOTrainer(ABC):
                     rand_prompts=rand_inputs
                     rand_originals=None
                 # print("rand_prompts", rand_prompts, self.generate_kwargs)
-                experience = self.experience_maker.make_experience(rand_prompts, original_data=rand_originals, reward_function=reward_shaping_function_instance, **self.generate_kwargs)
+                experience = self.experience_maker.make_experience(rand_prompts, original_data=rand_originals, reward_function=reward_shaping_function_instance, micro_train_batch_size=self.micro_train_batch_size,**self.generate_kwargs)
                 # print prompt/answer in each update step
                 if steps % update_timesteps == 0:
                     output = self.tokenizer.batch_decode(experience.sequences, skip_special_tokens=True)

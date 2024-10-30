@@ -23,7 +23,6 @@ class Experience:
     """Experience is a batch of data.
     These data should have the the sequence length and number of actions.
     Left padding for sequences is applied.
-
     Shapes of each tensor:
     sequences: (B, S)
     action_log_probs: (B, A)
@@ -32,7 +31,6 @@ class Experience:
     advatanges: (B, A)
     attention_mask: (B, S)
     action_mask: (B, A)
-
     "A" is the number of actions.
     """
 
@@ -120,51 +118,20 @@ class NaiveExperienceMaker(ABC):
         self.initial_model.eval()
         if self.reward_model is not None:
             self.reward_model.eval()
-        
-        # # generate seq
-        input_prompts = [p["prompt"] for p in prompts]
-        inputs = self.tokenize_fn(input_prompts, self.prompt_max_len, device="cuda")
+
+        # generate seq
+        inputs = self.tokenize_fn(prompts, self.prompt_max_len, device="cuda")
         sequences, attention_mask, action_mask = self.actor.generate(**inputs, **generate_kwargs)
-        
         num_actions = action_mask.size(1)
-        '''
-        # # log probs
-        # action_log_probs = self.actor(sequences, num_actions, attention_mask)
 
-        # # init log probs
-        # base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
+        # log probs
+        action_log_probs = self.actor(sequences, num_actions, attention_mask)
 
-        # # values
-        # value = self.critic(sequences, action_mask, attention_mask)
-        '''
-        all_action_log_probs = []
-        all_base_action_log_probs = []
-        all_values = []
+        # init log probs
+        base_action_log_probs = self.initial_model(sequences, num_actions, attention_mask)
 
-        batch_size = 4  # Define your batch size
-
-        # Process log probs in batches
-        for i in range(0, sequences.size(0), batch_size):
-            batch_sequences = sequences[i:i + batch_size]
-            batch_attention_mask = attention_mask[i:i + batch_size]
-            batch_action_mask = action_mask[i:i + batch_size]
-
-            # log probs
-            action_log_probs = self.actor(batch_sequences, num_actions, batch_attention_mask)
-            all_action_log_probs.append(action_log_probs)
-
-            # init log probs
-            base_action_log_probs = self.initial_model(batch_sequences, num_actions, batch_attention_mask)
-            all_base_action_log_probs.append(base_action_log_probs)
-
-            # values
-            value = self.critic(batch_sequences, batch_action_mask, batch_attention_mask)
-            all_values.append(value)
-
-        # Concatenate all batched results
-        action_log_probs = torch.cat(all_action_log_probs, dim=0)
-        base_action_log_probs = torch.cat(all_base_action_log_probs, dim=0)
-        value = torch.cat(all_values, dim=0)
+        # values
+        value = self.critic(sequences, action_mask, attention_mask)
 
         # rewards
         if self.remote_rm_url is not None:
@@ -225,19 +192,15 @@ class NaiveExperienceMaker(ABC):
         """Function that computes advantages and returns from rewards and values.
         Calculated as in the original PPO paper: https://arxiv.org/abs/1707.06347
         Note that rewards may include a KL divergence loss term.
-
         Advantages looks like this:
         Adv1 =  R1 + γ * λ * R2     + γ^2 * λ^2 * R3       + ...
               - V1 + γ * (1 - λ) V2 + γ^2 * λ * (1 - λ) V3 + ...
-
         Returns looks like this:
         Ret1 =  R1 + γ * λ * R2     + γ^2 * λ^2 * R3       + ...
                    + γ * (1 - λ) V2 + γ^2 * λ * (1 - λ) V3 + ...
-
         Input:
         - values: Tensor of shape (batch_size, response_size)
         - rewards: Tensor of shape (batch_size, response_size)
-
         Output:
         - advantages: Tensor of shape (batch_size, response_size)
         - returns: Tensor of shape (batch_size, response_size)
@@ -272,76 +235,108 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         # generate sequence
         start = time.time()
-        input_prompts = [p["prompt"] for p in prompts]
-        sequences, attention_mask, action_mask, outputs = (
-            self._generate_local(input_prompts, **generate_kwargs)
+        sequences_all, attention_mask_all, action_mask_all = (
+            self._generate_local(prompts, **generate_kwargs)
             if self.vllm_engines is None
-            else self._generate_vllm(input_prompts, **generate_kwargs)
+            else self._generate_vllm(prompts, **generate_kwargs)
         )
         generate_time = time.time() - start
 
-        num_actions = action_mask.size(1)
-        sequences_cpu, attention_mask_cpu, action_mask_cpu, outputs_cpu = (
-            sequences.to("cpu"),
-            attention_mask.to("cpu"),
-            action_mask.to("cpu"),
-            outputs.to("cpu"),
+        num_actions = action_mask_all.size(1)
+        sequences_cpu_all, attention_mask_cpu_all, action_mask_cpu_all = (
+            sequences_all.to("cpu"),
+            attention_mask_all.to("cpu"),
+            action_mask_all.to("cpu"),
         )
 
-        # init log probs
-        base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu, num_actions, attention_mask_cpu)
+        # 防止huggingface inference成为micro rollout batch size的瓶颈，因此在这里把vllm的推理结果切成micro train batch size
+        # 后面所有模型推理过程都遵循相同设定，
 
-        # values
-        value_ref = self.critic.forward.remote(sequences_cpu, action_mask_cpu, attention_mask_cpu)
-
-        # avoid CUDA OOM when colocate models
-        if self.strategy.args.colocate_critic_reward:
-            ray.get([value_ref])
-            ray.get([self.critic.empty_cache.remote()])
-
-        if self.strategy.args.colocate_actor_ref:
-            ray.get([base_action_log_probs_ref])
-            ray.get([self.initial_model.empty_cache.remote()])
-
-        # rewards
-        r_refs = []
-        # support remote RM API with ray
-        if not self.remote_rm_url:
-            for rm in self.reward_model:
-                r_refs.append(rm.forward.remote(sequences_cpu, attention_mask_cpu))
-        else:
-            # remote RM
-            queries = self.tokenizer.batch_decode(sequences_cpu, skip_special_tokens=False)
-            completions = self.tokenizer.batch_decode(outputs_cpu, skip_special_tokens=False)
-            prompts = [dict(p, completion=c) for p, c in zip(prompts, completions)]
-            for rm in self.remote_rm_url:
-                r = remote_rm_fn_ray.remote(rm, queries=queries, prompts=prompts)
-                r_refs.append(r)
+        chunk_size=generate_kwargs['micro_train_batch_size'] if 'micro_train_batch_size' in generate_kwargs else len(prompts)
 
 
+        ref_values_list=[]
+        action_log_probs_list=[]
+
+        for i in range(0, sequences_all.size(0), chunk_size):
+            sequences_cpu_chunk=sequences_cpu_all[i:i+chunk_size]
+            attention_mask_cpu_chunk=attention_mask_cpu_all[i:i+chunk_size]
+            action_mask_cpu_chunk=action_mask_cpu_all[i:i+chunk_size]
+            sequences_chunk=sequences_all[i:i+chunk_size]
+            attention_mask_chunk = attention_mask_all[i:i + chunk_size]
+            if original_data is not None:
+                original_data_chunk=original_data[i:i+chunk_size]
+
+            # init log probs
+            base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu_chunk, num_actions, attention_mask_cpu_chunk)
+
+            # values
+            value_ref = self.critic.forward.remote(sequences_cpu_chunk, action_mask_cpu_chunk, attention_mask_cpu_chunk)
 
 
-        # log probs
-        start = time.time()
-        action_log_probs = self.actor(sequences, num_actions, attention_mask)
-        actor_time = time.time() - start
+            # avoid CUDA OOM when colocate models
+            if self.strategy.args.colocate_critic_reward:
+                ray.get([value_ref])
+                ray.get([self.critic.empty_cache.remote()])
 
-        # wait initial/critic/reward model done
-        start = time.time()
-        ref_values = ray.get([base_action_log_probs_ref, value_ref] + r_refs)
-        wait_time = time.time() - start
+            if self.strategy.args.colocate_actor_ref:
+                ray.get([base_action_log_probs_ref])
+                ray.get([self.initial_model.empty_cache.remote()])
 
-        base_action_log_probs, value, rewards = ref_values[0], ref_values[1], ref_values[2:]
+            # rewards, 可以叠加多个reward model，纯粹根据返回值区分是prm还是orm。gt部分总是塞进reward shaping中。
+            r_refs = []
+            # support remote RM API with ray
+            if not self.remote_rm_url:
+                for rm in self.reward_model:
+                    r_refs.append(rm.forward.remote(sequences_cpu_chunk, attention_mask_cpu_chunk))
+            else:
+                # remote RM
+                for rm in self.remote_rm_url:
+                    queries = self.tokenizer.batch_decode(sequences_all.cpu(), skip_special_tokens=False)
+                    r = remote_rm_fn_ray.remote(rm, queries=queries)
+                    r_refs.append(r)
 
+            # log probs
+            start = time.time()
+            action_log_probs_chunk = self.actor(sequences_chunk, num_actions, attention_mask_chunk).cpu()
+            actor_time = time.time() - start
 
+            # get gt reward before waiting models done. if no reward_shaping method, gt_reward is always 0
+            if reward_function is not None:
+                gt_reward_chunk=reward_function.get_reward(sequences_chunk, attention_mask_chunk, original_data_chunk, num_actions)
+            else:
+                gt_reward_chunk=torch.zeros_like(sequences_chunk[:,0])
 
+            # wait initial/critic/reward model done
+            start = time.time()
+            ref_values_chunk = ray.get([base_action_log_probs_ref, value_ref] + r_refs)
+            wait_time = time.time() - start
+
+            # collect all results
+            ref_values_chunk.append(gt_reward_chunk)
+            ref_values_list.append(ref_values_chunk)
+            action_log_probs_list.append(action_log_probs_chunk)
+
+        # concat all results
+        ref_values=[]
+        for i in range(len(ref_values_list[0])):
+            ref_values.append(torch.cat([ref_values_list_item[i] for ref_values_list_item in ref_values_list], dim=0))
+        action_log_probs=torch.cat(action_log_probs_list, dim=0).to(device)
+
+        base_action_log_probs, value, rewards, gt_rewards= ref_values[0], ref_values[1], ref_values[2:-1], ref_values[-1]
         base_action_log_probs, value = base_action_log_probs.to(device), value.to(device)
         rewards = [r.to(device) for r in rewards]
-        r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
 
         # if reward function is not None, call it. This should adapt to multi reward model.
         if reward_function is not None:
-            r = reward_function(r, sequences, attention_mask, original_data)
+            # this will always return 2D tensor. we need to apply it back to the sequence.
+            # the method is to add it back after compute_reward()
+            r = reward_function(gt_rewards,*rewards)
+        else:
+            # Does not support PRM
+            r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+            r=r.unsqueeze(1)
+
 
         # avoid CUDA OOM when colocate models
         if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:
@@ -351,42 +346,46 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             torch.cuda.empty_cache()
 
         reward, kl = compute_reward(
-            r,
+            r[:,-1], # last step of r
             self.kl_ctl.value,
             action_log_probs,
             base_action_log_probs,
-            action_mask=action_mask,
+            action_mask=action_mask_all,
         )
+        # TODO: apply prm on trajectory
+
         advantage, returns = self.get_advantages_and_returns(
             value,
             reward,
-            action_mask,
+            action_mask_all,
             generate_kwargs["gamma"],
             generate_kwargs["lambd"],
         )
 
         info = {
-            "kl": masked_mean(kl, action_mask, dim=-1),
-            "reward": r,
-            "return": reward.sum(dim=-1),
-            "response_length": action_mask.float().sum(dim=-1),
-            "total_length": attention_mask.float().sum(dim=-1),
+            "kl": masked_mean(kl, action_mask_all, dim=-1),
+            "reward": r.sum(dim=1),
+            # "reward_rm": torch.zeros_like(r),
+            # "reward_gt": torch.zeros_like(r),
+            "return": reward.sum(dim=-1), # 训练过程中记录的return是r-kl的结果，随着训练过程而逐渐增长没有问题。
+            "response_length": action_mask_all.float().sum(dim=-1),
+            "total_length": attention_mask_all.float().sum(dim=-1),
         }
 
-        if self.strategy.args.perf:
+        if self.strategy.args.perf: # 一般不用
             batch_size = 1 if isinstance(prompts, str) else len(prompts)
             info["generate_time"] = torch.full((batch_size,), generate_time, device=device)
             info["actor_time"] = torch.full((batch_size,), actor_time, device=device)
             info["wait_time"] = torch.full((batch_size,), wait_time, device=device)
 
         experience = Experience(
-            sequences,
+            sequences_all,
             action_log_probs,
             value,
             returns,
             advantage,
-            attention_mask,
-            action_mask,
+            attention_mask_all,
+            action_mask_all,
             info,
         )
 
@@ -459,8 +458,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         sequences, attention_mask, action_mask = self.actor.process_sequences(
             sequences, max_input_len, eos_token_id, pad_token_id
         )
-        outputs = sequences[:, max_input_len:]
-        return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda"), outputs.to("cuda")
+        return sequences.to("cuda"), attention_mask.to("cuda"), action_mask.to("cuda")
 
     def flush(self):
         "Ensure all experience has been send to critic"

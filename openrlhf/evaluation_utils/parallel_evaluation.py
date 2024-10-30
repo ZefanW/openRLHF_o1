@@ -3,8 +3,9 @@ import pandas as pd
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from tqdm.asyncio import tqdm
-from code_util import evaluate_code
-from math_util import evaluate_math
+from .code_util import evaluate_code
+from .math_util import evaluate_math
+from .code_util import evaluate_repl
 # from code_util import evaluate_code
 # from math_util import evaluate_math
 
@@ -13,6 +14,9 @@ def process_completion(completion, task, reference):
         return evaluate_code(completion, reference)
     elif task == "math":
         return evaluate_math(completion, str(reference))
+    elif task == 'repl':
+        return evaluate_repl(completion, reference)
+
     else:
         raise NotImplementedError
 

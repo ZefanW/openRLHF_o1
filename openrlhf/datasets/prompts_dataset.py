@@ -5,21 +5,26 @@ from tqdm import tqdm
 from .utils import exist_and_not_none
 
 
-def preprocess_data(data, input_template=None, input_key="input", ref_key=None, task=None, apply_chat_template=None) -> str:
+def preprocess_data(data, input_template=None, input_key="input", ref_key=None, task=None, apply_chat_template=None) -> dict:
     if apply_chat_template:
         if isinstance(data[input_key], list):
-            prompt = apply_chat_template(data[input_key], tokenize=False, add_generation_prompt=True)
+            # 适配ultra_interact的trajectory
+            if len(data[input_key])>0 and 'role' not in data[input_key][0]:
+                prompt=apply_chat_template([{'role':piece['from'], 'content':piece['value']} for piece in data[input_key]], tokenize=False, add_generation_prompt=True)
+            else:
+                prompt = apply_chat_template(data[input_key], tokenize=False, add_generation_prompt=True)
         else:
             prompt = apply_chat_template([{"role": "user", "content": data[input_key]}], tokenize=False, add_generation_prompt=True)
     else:
         prompt = data[input_key]
         if input_template:
             prompt = input_template.format(prompt)
-    if ref_key:
-        ref = data[ref_key]
-    else:
-        ref = None
-    return {"prompt": prompt, "reference": ref, "task": task, "completions": None}
+    return prompt
+    # if ref_key:
+    #     ref = data[ref_key]
+    # else:
+    #     ref = None
+    # return {"prompt": prompt, "reference": ref, "task": task, "completions": None}
 
 
 class PromptDataset(Dataset):
@@ -57,9 +62,9 @@ class PromptDataset(Dataset):
         self.prompts = []
         self.original =[]
         for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
-            prompt = preprocess_data(data, input_template, input_key, ref_key, task, apply_chat_template)
-            self.prompts.append(prompt)
-            self.original.append(json.dumps(data,ensure_ascii=False)) # cheat collate function
+            prompt_dict = preprocess_data(data, input_template, input_key, ref_key, task, apply_chat_template) # cheat collate function to pass the whole data entry
+            self.prompts.append(prompt_dict)
+            self.original.append(json.dumps(data,ensure_ascii=False))
 
 
     def __len__(self):
