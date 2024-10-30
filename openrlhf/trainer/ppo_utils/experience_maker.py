@@ -264,6 +264,8 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             action_mask_cpu_chunk=action_mask_cpu_all[i:i+chunk_size]
             sequences_chunk=sequences_all[i:i+chunk_size]
             attention_mask_chunk = attention_mask_all[i:i + chunk_size]
+            if original_data is not None:
+                original_data_chunk=original_data[i:i+chunk_size]
 
             # init log probs
             base_action_log_probs_ref = self.initial_model.forward.remote(sequences_cpu_chunk, num_actions, attention_mask_cpu_chunk)
@@ -299,12 +301,19 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             action_log_probs_chunk = self.actor(sequences_chunk, num_actions, attention_mask_chunk).cpu()
             actor_time = time.time() - start
 
+            # get gt reward before waiting models done. if no reward_shaping method, gt_reward is always 0
+            if reward_function is not None:
+                gt_reward_chunk=reward_function.get_reward(sequences_chunk, attention_mask_chunk, original_data_chunk, num_actions)
+            else:
+                gt_reward_chunk=torch.zeros_like(sequences_chunk[:,0])
+
             # wait initial/critic/reward model done
             start = time.time()
             ref_values_chunk = ray.get([base_action_log_probs_ref, value_ref] + r_refs)
             wait_time = time.time() - start
 
             # collect all results
+            ref_values_chunk.append(gt_reward_chunk)
             ref_values_list.append(ref_values_chunk)
             action_log_probs_list.append(action_log_probs_chunk)
 
@@ -314,14 +323,20 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             ref_values.append(torch.cat([ref_values_list_item[i] for ref_values_list_item in ref_values_list], dim=0))
         action_log_probs=torch.cat(action_log_probs_list, dim=0).to(device)
 
-        base_action_log_probs, value, rewards = ref_values[0], ref_values[1], ref_values[2:]
+        base_action_log_probs, value, rewards, gt_rewards= ref_values[0], ref_values[1], ref_values[2:-1], ref_values[-1]
         base_action_log_probs, value = base_action_log_probs.to(device), value.to(device)
         rewards = [r.to(device) for r in rewards]
-        r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
 
         # if reward function is not None, call it. This should adapt to multi reward model.
         if reward_function is not None:
-            r = reward_function(r, sequences_all, attention_mask_all, original_data,num_actions)
+            # this will always return 2D tensor. we need to apply it back to the sequence.
+            # the method is to add it back after compute_reward()
+            r = reward_function(gt_rewards,*rewards)
+        else:
+            # Does not support PRM
+            r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+            r=r.unsqueeze(1)
+
 
         # avoid CUDA OOM when colocate models
         if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:
@@ -331,12 +346,14 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             torch.cuda.empty_cache()
 
         reward, kl = compute_reward(
-            r,
+            r[:,-1], # last step of r
             self.kl_ctl.value,
             action_log_probs,
             base_action_log_probs,
             action_mask=action_mask_all,
         )
+        # TODO: apply prm on trajectory
+
         advantage, returns = self.get_advantages_and_returns(
             value,
             reward,
@@ -347,9 +364,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         info = {
             "kl": masked_mean(kl, action_mask_all, dim=-1),
-            "reward": r,
-            "reward_rm": torch.zeros_like(r), # TODO: wandb部分需要支持不止一个rm的情况
-            "reward_gt": torch.zeros_like(r),
+            "reward": r.sum(dim=1),
+            # "reward_rm": torch.zeros_like(r),
+            # "reward_gt": torch.zeros_like(r),
             "return": reward.sum(dim=-1), # 训练过程中记录的return是r-kl的结果，随着训练过程而逐渐增长没有问题。
             "response_length": action_mask_all.float().sum(dim=-1),
             "total_length": attention_mask_all.float().sum(dim=-1),

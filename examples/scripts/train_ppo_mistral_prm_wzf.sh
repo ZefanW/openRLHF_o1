@@ -2,6 +2,8 @@ set -x
 ray stop --force
 ray start --head --num-gpus 8 --num-cpus 64
 # 测试基本ray代码中，貌似是tensor_parallel不能设置为1，设为1有卡死问题。
+# 本脚本使用prm训练，叠加reward shaping和delta功能。这两个功能都放在reward shaping里。
+# 训练数据包含代码和数学
 
 RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --runtime-env /home/wangzefan/data/OpenRLHF/examples/env_vars/runtime-env.json \
@@ -18,9 +20,9 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --vllm_tensor_parallel_size 1 \
    --save_steps -1 \
    --logging_steps 1 \
-   --pretrain /data/public/wangshuo/LongContext/model/meta-llama/Llama3.1-8b-instruct \
-   --reward_pretrain /home/wangzefan/huggingface/Skywork-Reward-Llama-3.1-8B \
-   --save_path /home/wangzefan/data/OpenRLHF/jobs/llama-ppo-rs-ui-math-only-001kl \
+   --pretrain /home/wangzefan/data/OpenRLHF/checkpoints/Mistral-7B-Instruct-v0.2 \
+   --reward_pretrain /home/wangzefan/data/OpenRLHF/checkpoints/Eurus-RM-7b \
+   --save_path /home/wangzefan/data/OpenRLHF/jobs/mistral-prm-delta \
    --micro_train_batch_size 8 \
    --train_batch_size 128 \
    --micro_rollout_batch_size 128 \
@@ -33,7 +35,7 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
    --init_kl_coef 0.01 \
-   --prompt_data /home/wangzefan/data/OpenRLHF/datasets/UltraInteract_0911/have_reference.jsonl \
+   --prompt_data /home/wangzefan/data/OpenRLHF/datasets/UltraInteract_pair_math/train_ppo.jsonl \
    --input_key trajectory \
    --apply_chat_template \
    --normalize_reward \
@@ -42,6 +44,9 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --gradient_checkpointing \
    --use_wandb True \
    --reward_shaping_function qwen_like \
+   --prm_trigger "Step " \
+   --prm_token 12902
+
 #   --colocate_critic_reward \
 #   --colocate_actor_ref \
 #   --ref_reward_offload \

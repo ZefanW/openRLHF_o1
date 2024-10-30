@@ -283,6 +283,10 @@ if __name__ == "__main__":
     parser.add_argument("--value_head_prefix", type=str, default="value_head")
     parser.add_argument("--ref_reward_offload", action="store_true", default=False)
 
+    # PRM support
+    parser.add_argument('--prm_trigger',type=str, default=None, help='key word that triggers prm. If set to None, the prm will not be used')
+    parser.add_argument('--prm_token',type=int,default=12902,help='special token for prm value head')
+
     # Custom dataset
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")
     parser.add_argument(
