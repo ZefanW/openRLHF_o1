@@ -97,32 +97,82 @@ def qwen_like(*args, **kwargs):
 
                 reward_gt[i] = success
             return reward_gt
-        def __call__(self, reward_gt,rewards_rm):
+        def __call__(self, reward_gt, rewards_rm, action_mask):
             """
-            always return 2D tensor [Batch, Step]
+            will return two tensors:
+            r_last, which is the last reward
+            process_r, which is rewards other than the last one. Steps without a reward will be set as zero.
+
+            always return 2D tensor [Batch, num_actions], while the step exactly correspond to the sequence length
+            will also return the final reward
+            the final reward will be on the place of eos_token
+            the reward_gt and rewards_rm are already on the correct device!
+            TODO: currently, the last reward in prm does not match eos token. we force them to match.
             """
+            eos_indices=action_mask.size(1) - 1 - action_mask.long().fliplr().argmax(dim=1, keepdim=True)
+            reward_process = torch.zeros_like(action_mask).to(reward_gt.device).to(torch.float32)
+            reward_last=torch.zeros_like(reward_process[:,0])
+
+            for reward_rm in rewards_rm:
+                if len(reward_rm.shape)>1:
+                    # this is a prm. reward_last will have the last reward, other steps will also have reward
+
+
+
+                    for sample_i in range(reward_process.shape[0]):
+                        step_reward_poses=torch.where(~torch.isinf(reward_rm[sample_i]))
+                        step_reward=reward_rm[sample_i][step_reward_poses]
+                        # TODO: we need to determine whether we should add sigmoid here. The prm we used here has very low numerical range, maybe we should not sigmoid.
+                        # step_reward=torch.sigmoid(step_reward)
+                        # apply delta
+                        step_reward[:-1]-=step_reward.clone()[1:]
+                        # fill into reward_process and reward_last
+                        reward_process[sample_i][step_reward_poses]+=step_reward
+                        reward_process[sample_i,step_reward_poses[0][-1]]-=step_reward[-1] # make sure that the last reward is subtracted.
+                        reward_last[sample_i]+=step_reward[-1]
+                else:
+                    # this is simple rm
+                    reward_last+=torch.sigmoid(reward_rm)
+
+            # apply weighted gt
+            reward_last+=5*reward_gt
+
+            return reward_last, reward_process
+
+
             # rewards_rm为一个列表，包含多个rm的结果。其中shape=[B]的为orm，shape=[B,S]的为prm。prm至多有一个
             # check if there exist prm
-            reward_shaped=None
-            for reward_rm in rewards_rm:
-                if len(reward_rm.shape)>1:
-                    reward_shaped=torch.zeros_like(reward_rm)
-            if reward_shaped is None:
-                reward_shaped=torch.zeros_like(rewards_rm).unsqueeze(1)
+            # reward_shaped=None
+            # for reward_rm in rewards_rm:
+            #     if len(reward_rm.shape)>1:
+            #         reward_shaped=torch.zeros_like(reward_rm)
+            # if reward_shaped is None:
+            #     reward_shaped=torch.zeros_like(rewards_rm).unsqueeze(1)
+            #
+            # # adding rewards
+            # for reward_rm in rewards_rm:
+            #     if len(reward_rm.shape)>1:
+            #         reward_shaped+=reward_rm
+            #     else:
+            #         reward_shaped[:,-1]+=reward_rm
+            #
+            # # applying sigmoid
+            # reward_shaped=torch.sigmoid(reward_shaped)
+            #
+            # # applying weighting
+            # reward_shaped[:,-1]+=5*reward_gt
+            #
+            # return reward_shaped
 
-            # adding rewards
-            for reward_rm in rewards_rm:
-                if len(reward_rm.shape)>1:
-                    reward_shaped+=reward_rm
-                else:
-                    reward_shaped[:,-1]+=reward_rm
+        # def extract_process_rewards(self,r,sequences_prm,prm_token_id):
+        #     # shepherd的prm提取方法，看648和387两个token的得分谁高
+        #     scores=r[:,:,[648,387]].softmax(dim=-1)[:,:,0]
+        #     reward_list_flipped=[] # 准备做左填充，因此数值直接反过来
+        #     for score_tensor,sequence_prm in (scores,sequences_prm):
+        #         reward_list_flipped.append(score_tensor[sequence_prm==prm_token_id][::-1])
+        #     process_rewards=torch.nn.utils.rnn.pad_sequence(reward_list_flipped,batch_first=True,padding_value=0.)[:,::-1]
+        #     return process_rewards
 
-            # applying sigmoid
-            reward_shaped=torch.sigmoid(reward_shaped)
 
-            # applying weighting
-            reward_shaped[:,-1]+=5*reward_gt
-
-            return reward_shaped
 
     return QwenLike(*args, **kwargs)

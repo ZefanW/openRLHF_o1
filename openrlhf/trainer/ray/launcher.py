@@ -127,6 +127,91 @@ class RewardModelRayActor(BasePPORole):
     def empty_cache(self) -> None:
         torch.cuda.empty_cache()
 
+    def is_prm(self):
+        return False
+
+@ray.remote(num_gpus=1)
+class ProcessRewardModelRayActor(BasePPORole):
+    """
+    只有传入了process_reward_pretrain以后才会启动这个reward model。同时要求指定prm_type。
+    默认为在causal model上改写forward函数
+    prm的output总是和sequences规格相等，没有reward的地方会被设置为-inf。
+    需要插入special token的prm会改为把触发词的前一个token改为特殊字符，简化处理过程。插入特殊token需要的改写太多了
+    会提供一个方法检测仅generation部分，哪些位置的token代表了step的结束，
+    """
+    def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain):
+        self._setup_distributed(strategy)
+        model = Actor(
+            pretrain,
+            use_flash_attention_2=strategy.args.flash_attn,
+            bf16=strategy.args.bf16,
+            load_in_4bit=strategy.args.load_in_4bit,
+            ds_config=strategy.get_ds_eval_config(offload=strategy.args.ref_reward_offload),
+            value_head_prefix=strategy.args.value_head_prefix,
+        )
+        strategy.print(model)
+
+        if strategy.args.ref_reward_offload:
+            model._offload = True
+
+        self.model = self.strategy.prepare(model, is_rlhf=True)
+        self.model.eval()
+
+        self.prm_type=strategy.args.prm_type
+        if self.prm_type=='shepherd':
+            self.prm_trigger='Step '
+            self.prm_token_id=12902
+            self.candidate_tokens=[648,387]
+
+    def find_step_end(self,sequences, num_actions=0, tokenizer=None):
+        # 总是返回相对sequences开头的位置，num_actions用来指定最后多少个位置是answer
+        if self.prm_type == 'shepherd':
+            assert tokenizer is not None
+            texts=tokenizer.batch_decode(sequences[:, -num_actions:],skip_special_tokens=True)
+            max_positions=(sequences[:,-num_actions:]!=tokenizer.pad_token_id).sum(dim=1)
+            prompt_length=sequences.shape[1]-num_actions
+            texts_splits = [text.split(self.prm_trigger) for text in texts]
+            step_ends=[]
+            for text_splits,max_position in zip(texts_splits,max_positions):
+                step_end=[]
+                for text_split in text_splits:
+                    cur_step_end=step_end[-1] if len(step_end)>0 else 1
+                    cur_step_end+=tokenizer.encode(text_split,add_special_tokens=False).__len__()
+                    cur_step_end=min(cur_step_end,max_position.item()-1)
+                    step_end.append(cur_step_end)
+                step_ends.append(step_end)
+            # 加上offset
+            for i in range(len(step_ends)):
+                step_ends[i]=[_+prompt_length for _ in step_ends[i]]
+            return step_ends
+        else:
+            raise NotImplementedError
+    def forward(self, sequences: torch.LongTensor, attention_mask: Optional[torch.Tensor] = None, num_actions=0,step_ends:list=[]) -> torch.Tensor:
+        # 和普通reward model不同，最终总是返回一个长tensor，长度刚好和sequences一致
+        # 函数本身不返回reward位置，依靠直接判定哪里不是-inf来找reward在哪里。
+        device = torch.cuda.current_device()
+        with torch.no_grad():
+            if self.prm_type=='shepherd':
+                sequences=sequences.clone()
+                for sample_i, step_end in enumerate(step_ends):
+                    sequences[sample_i, step_end]=self.prm_token_id
+                # 调用裸的类actor model，而非直接获取log prob
+                logits = self.model(sequences.to(device), num_actions=None, attention_mask=attention_mask.to(device),return_output=True).logits[:,:,self.candidate_tokens]
+                scores=logits.softmax(dim=-1)[:,:,0]
+                scores[sequences!=self.prm_token_id]=-torch.inf
+                # 只需要保留num_actions的部分即可
+                scores=scores[:,-num_actions:]
+                reward=scores
+            else:
+                raise NotImplementedError
+
+        return reward.to("cpu")
+
+    def empty_cache(self) -> None:
+        torch.cuda.empty_cache()
+
+    def is_prm(self):
+        return True
 
 class PPORayActorGroup:
     """

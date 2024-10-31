@@ -12,6 +12,7 @@ from openrlhf.trainer.ray import (
     PPORayActorGroup,
     ReferenceModelRayActor,
     RewardModelRayActor,
+    ProcessRewardModelRayActor,
     create_vllm_engines,
 )
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
@@ -124,18 +125,29 @@ def train(args):
 
     # multiple reward models
     if not args.remote_rm_url:
-        reward_pretrains = args.reward_pretrain.split(",")
         reward_models = []
-        for _ in reward_pretrains:
-            reward_models.append(
-                PPORayActorGroup(
-                    args.reward_num_nodes,
-                    args.reward_num_gpus_per_node,
-                    RewardModelRayActor,
-                    pg=pg,
-                    num_gpus_per_actor=0.25 if pg else 1,
+        reward_pretrains=[]
+        if args.reward_pretrain is not None:
+            reward_pretrains.extend(args.reward_pretrain.split(","))
+
+            for _ in reward_pretrains:
+                reward_models.append(
+                    PPORayActorGroup(
+                        args.reward_num_nodes,
+                        args.reward_num_gpus_per_node,
+                        RewardModelRayActor,
+                        pg=pg,
+                        num_gpus_per_actor=0.25 if pg else 1,
+                    )
                 )
-            )
+        if args.process_reward_pretrain is not None:
+            reward_pretrains.extend(args.process_reward_pretrain.split(","))
+            reward_models.append(PPORayActorGroup(
+                args.reward_num_nodes, args.reward_num_gpus_per_node,
+                ProcessRewardModelRayActor,
+                pg=pg,
+                num_gpus_per_actor = 0.25 if pg else 1,
+            ))
     else:
         reward_models = None
 
@@ -155,7 +167,7 @@ def train(args):
     refs.extend(critic_model.async_init_model_from_pretrained(strategy, args.critic_pretrain, max_steps))
     ray.get(refs)
 
-    # train actor and critic mdoel
+    # train actor and critic model
     refs = actor_model.async_fit_actor_model(
         critic_model, ref_model, reward_models, args.remote_rm_url, reward_fn=reward_fn, vllm_engines=vllm_engines
     )
@@ -284,8 +296,10 @@ if __name__ == "__main__":
     parser.add_argument("--ref_reward_offload", action="store_true", default=False)
 
     # PRM support
-    parser.add_argument('--prm_trigger',type=str, default=None, help='key word that triggers prm. If set to None, the prm will not be used')
-    parser.add_argument('--prm_token',type=int,default=12902,help='special token for prm value head')
+    parser.add_argument('--process_reward_pretrain',type=str,default=None,help='PRM model name or path')
+    # parser.add_argument('--prm_trigger',type=str, default=None, help='key word that triggers prm. If set to None, the prm will not be used')
+    # parser.add_argument('--prm_token_id',type=int,default=12902,help='special token for prm value head')
+    parser.add_argument('--prm_type',type=str,default=None,help='type of current prm')
 
     # Custom dataset
     parser.add_argument("--prompt_data", type=str, default=None, help="HF dataset name or path")
@@ -329,7 +343,7 @@ if __name__ == "__main__":
 
     if args.critic_pretrain is None:
         if not args.remote_rm_url:
-            args.critic_pretrain = args.reward_pretrain.split(",")[0]
+            args.critic_pretrain = args.reward_pretrain.split(",")[0] if args.reward_pretrain is not None else args.process_reward_pretrain
         else:
             args.critic_pretrain = args.pretrain
 

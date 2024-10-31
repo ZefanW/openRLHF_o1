@@ -15,6 +15,7 @@ from openrlhf.models.utils import compute_reward, masked_mean
 from openrlhf.utils.logging_utils import init_logger
 from openrlhf.utils.remote_rm_utils import remote_rm_fn, remote_rm_fn_ray
 
+
 logger = init_logger(__name__)
 
 
@@ -249,6 +250,40 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             action_mask_all.to("cpu"),
         )
 
+        # TODO: 需要清理一些误导性注释。现在prm的step识别和预测规则全盘交给actor model，experience部分只做简单处理。
+
+        # 服务于prm，计算插入过prm_token的结果
+        # prm_trigger = getattr(self.strategy.args, 'prm_trigger', None) # 如果是None，后面只会在结尾处添加一个prm_token_id
+        # prm_token_id = getattr(self.strategy.args, 'prm_token_id', None)
+        # assert prm_token_id is not None
+
+        # 只要trigger不是空串，就需要在sequences里插入token
+        # PRM工作流程：将回答提取出来，反tokenize，监测prm_trigger的存在，根据trigger信号给文本分段，分段后分别tokenize在最后加上prm_token_id，然后合并起来。这样获得的结果再拿去跑reward model。只要返回的reward不是只有batch维度，就说明遇到了一个PRM。获取sequences中等于prm_trigger的位置，把这些位置的reward提出来，就是prm reward。这些reward的位置在后续会减去前序trigger token的数量，并且缩到合理范围内，然后加到reward trajectory上。
+        # texts = self.tokenizer.batch_decode(sequences_cpu_all[:, -num_actions:], skip_special_tokens=True)
+        # # 1024的prompt长度偶尔会导致user prompt不完整的问题
+        # texts_splits=[text.split(prm_trigger) for text in texts]
+        # token_lists=[]
+        # for texts_split in texts_splits:
+        #     cur_token_list=[]
+        #     for split_id in range(len(texts_split)):
+        #         cur_text=(prm_trigger if split_id>0 else '')+texts_split[split_id]
+        #         cur_token_list.extend(self.tokenizer.encode(cur_text,add_special_tokens=False)+[prm_token_id])
+        #     token_lists.append(cur_token_list)
+        #
+        # texts_prm=torch.nn.utils.rnn.pad_sequence([torch.tensor(token_list) for token_list in token_lists],batch_first=True,padding_value=self.tokenizer.pad_token_id)
+        # sequences_cpu_prm=torch.cat([sequences_cpu_all[:,:-num_actions],texts_prm],dim=1)
+        # attention_mask_cpu_prm=torch.cat([attention_mask_cpu_all[:,:-num_actions],texts_prm!=self.tokenizer.pad_token_id],dim=1)
+
+
+        # prm_token = self.tokenizer.convert_ids_to_tokens([prm_token_id])[0].replace('▁','')
+        # texts_prm = [texts_.replace(prm_trigger, prm_token + prm_trigger) for texts_ in texts]
+        # response_prm_tokenized = self.tokenize_fn(prompts, self.prompt_max_len, device="cpu")
+        # from IPython import embed; embed()
+        # sequences_cpu_prm = torch.cat([sequences_cpu_all[:,:-num_actions],response_prm_tokenized['input_ids']], dim=1)
+        # attention_mask_cpu_prm = torch.cat([attention_mask_cpu_all[:,:-num_actions],response_prm_tokenized['attention_mask']], dim=1)
+        # chunk部分只需要保留每个sequence中id等于prm_token_id的即可。注意需要左pad，以确保reward不会出现在sequence外。
+
+
         # 防止huggingface inference成为micro rollout batch size的瓶颈，因此在这里把vllm的推理结果切成micro train batch size
         # 后面所有模型推理过程都遵循相同设定，
 
@@ -264,6 +299,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             action_mask_cpu_chunk=action_mask_cpu_all[i:i+chunk_size]
             sequences_chunk=sequences_all[i:i+chunk_size]
             attention_mask_chunk = attention_mask_all[i:i + chunk_size]
+            # sequences_cpu_prm_chunk=sequences_cpu_prm[i:i+chunk_size]
+            # attention_mask_cpu_prm_chunk=attention_mask_cpu_prm[i:i+chunk_size]
+
             if original_data is not None:
                 original_data_chunk=original_data[i:i+chunk_size]
 
@@ -288,7 +326,11 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             # support remote RM API with ray
             if not self.remote_rm_url:
                 for rm in self.reward_model:
-                    r_refs.append(rm.forward.remote(sequences_cpu_chunk, attention_mask_cpu_chunk))
+
+                    if ray.get(rm.is_prm.remote()):
+                        r_refs.append(rm.forward.remote(sequences_cpu_chunk, attention_mask_cpu_chunk, num_actions, ray.get(rm.find_step_end.remote(sequences_cpu_chunk, num_actions, self.tokenizer))))
+                    else:
+                        r_refs.append(rm.forward.remote(sequences_cpu_chunk, attention_mask_cpu_chunk, ))
             else:
                 # remote RM
                 for rm in self.remote_rm_url:
@@ -324,19 +366,25 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
         action_log_probs=torch.cat(action_log_probs_list, dim=0).to(device)
 
         base_action_log_probs, value, rewards, gt_rewards= ref_values[0], ref_values[1], ref_values[2:-1], ref_values[-1]
-        base_action_log_probs, value = base_action_log_probs.to(device), value.to(device)
+        base_action_log_probs, value, gt_rewards= base_action_log_probs.to(device), value.to(device), gt_rewards.to(device)
+
+
+
+        # 处理rewards中的prm，将其转化为index和value的形式。value为了和orm可以直接叠加，进行左padding
+        # rewards=[r if len(r.shape)==1 else reward_function.extract_process_rewards(r,sequences_cpu_prm, prm_token_id) for r in rewards]
+
         rewards = [r.to(device) for r in rewards]
+
 
         # if reward function is not None, call it. This should adapt to multi reward model.
         if reward_function is not None:
             # this will always return 2D tensor. we need to apply it back to the sequence.
             # the method is to add it back after compute_reward()
-            r = reward_function(gt_rewards,*rewards)
+            r_last, process_r= reward_function(gt_rewards, rewards, action_mask_all)
         else:
             # Does not support PRM
-            r = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
-            r=r.unsqueeze(1)
-
+            r_last = self.reward_fn(rewards) if len(rewards) > 0 else rewards[0]
+            # r=r.unsqueeze(1)
 
         # avoid CUDA OOM when colocate models
         if self.strategy.args.colocate_critic_reward and not self.remote_rm_url:
@@ -346,13 +394,16 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
             torch.cuda.empty_cache()
 
         reward, kl = compute_reward(
-            r[:,-1], # last step of r
+            r_last, # last step of r
             self.kl_ctl.value,
             action_log_probs,
             base_action_log_probs,
             action_mask=action_mask_all,
         )
-        # TODO: apply prm on trajectory
+
+        if reward_function is not None:
+            reward[~torch.isinf(process_r)]+=process_r[~torch.isinf(process_r)] # 这一步里面process_r为0的部分不会产生任何影响
+
 
         advantage, returns = self.get_advantages_and_returns(
             value,
@@ -364,9 +415,9 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         info = {
             "kl": masked_mean(kl, action_mask_all, dim=-1),
-            "reward": r.sum(dim=1),
-            # "reward_rm": torch.zeros_like(r),
-            # "reward_gt": torch.zeros_like(r),
+            "reward": reward.sum(dim=1), # log total reward
+            # "reward_rm": torch.zeros_like(r), # 只有reward model的不太好计算。
+            "reward_gt": gt_rewards, # log gt reward
             "return": reward.sum(dim=-1), # 训练过程中记录的return是r-kl的结果，随着训练过程而逐渐增长没有问题。
             "response_length": action_mask_all.float().sum(dim=-1),
             "total_length": attention_mask_all.float().sum(dim=-1),
