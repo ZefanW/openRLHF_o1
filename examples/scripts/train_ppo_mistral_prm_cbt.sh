@@ -1,32 +1,33 @@
-set -x 
-ray stop --force
-ray start --head --num-gpus 8 --num-cpus 64
-# 测试基本ray代码中，貌似是tensor_parallel不能设置为1，设为1有卡死问题。
-# 本脚本使用prm训练，叠加reward shaping和delta功能。这两个功能都放在reward shaping里。
-# 训练数据包含代码和数学
+set -x
+/home/wangzefan3376/anaconda3/bin/conda init
+source ~/.bashrc
+conda activate openrlhf
+ray start --head --num-gpus 8 --num-cpus 32 --disable-usage-stats
+# 4090集群专用
 
 RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
-   --runtime-env /home/wangzefan/data/OpenRLHF/examples/env_vars/runtime-env.json \
-   -- python3 /home/wangzefan/data/OpenRLHF/openrlhf/cli/train_ppo_ray.py \
+   --runtime-env /home/wangzefan3376/OpenRLHF/examples/env_vars/runtime-env-cbt.json \
+   -- python3 /home/wangzefan3376/OpenRLHF/openrlhf/cli/train_ppo_ray.py \
    --ref_num_nodes 1 \
    --ref_num_gpus_per_node 1 \
    --reward_num_nodes 1 \
    --reward_num_gpus_per_node 1 \
    --critic_num_nodes 1 \
-   --critic_num_gpus_per_node 1 \
+   --critic_num_gpus_per_node 2 \
    --actor_num_nodes 1 \
-   --actor_num_gpus_per_node 1 \
+   --actor_num_gpus_per_node 2 \
    --vllm_num_engines 2 \
    --vllm_tensor_parallel_size 1 \
-   --save_steps -1 \
+   --save_steps 256 \
    --logging_steps 1 \
-   --pretrain /home/wangzefan/data/OpenRLHF/checkpoints/Mistral-7B-Instruct-v0.2 \
-   --process_reward_pretrain /home/wangzefan/huggingface/math-shepherd-mistral-7b-prm \
-   --save_path /home/wangzefan/data/OpenRLHF/jobs/mistral-prm-delta \
-   --micro_train_batch_size 8 \
-   --train_batch_size 128 \
+   --pretrain /home/wangzefan3376/huggingface/Mistral-7B-Instruct-v0.2 \
+   --process_reward_pretrain /home/wangzefan3376/huggingface/Eurus-RM-7b \
+   --save_path /user/wangzefan3376/OpenRLHF/jobs/mistral-prm-delta \
+   --ckpt_path /user/wangzefan3376/OpenRLHF/jobs/mistral-prm-delta/ckpt \
+   --micro_train_batch_size 2 \
+   --train_batch_size 1024 \
    --micro_rollout_batch_size 128 \
-   --rollout_batch_size 128 \
+   --rollout_batch_size 1024 \
    --max_epochs 1 \
    --prompt_max_len 1024 \
    --generate_max_len 2048 \
@@ -35,7 +36,7 @@ RAY_ADDRESS='http://127.0.0.1:8265' ray job submit \
    --actor_learning_rate 5e-7 \
    --critic_learning_rate 9e-6 \
    --init_kl_coef 0.01 \
-   --prompt_data /home/wangzefan/data/OpenRLHF/datasets/UltraInteract_0911/have_reference_toy.jsonl  \
+   --prompt_data /home/wangzefan3376/OpenRLHF/datasets/UltraInteract_0911/have_reference_toy.jsonl  \
    --input_key trajectory \
    --apply_chat_template \
    --normalize_reward \

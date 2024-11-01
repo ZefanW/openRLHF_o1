@@ -415,7 +415,7 @@ class RemoteExperienceMaker(NaiveExperienceMaker):
 
         info = {
             "kl": masked_mean(kl, action_mask_all, dim=-1),
-            "reward": reward.sum(dim=1), # log total reward
+            "reward": reward.sum(dim=1)+self.kl_ctl.value*kl.sum(dim=1), # log total reward, 去掉kl部分即可。
             # "reward_rm": torch.zeros_like(r), # 只有reward model的不太好计算。
             "reward_gt": gt_rewards, # log gt reward
             "return": reward.sum(dim=-1), # 训练过程中记录的return是r-kl的结果，随着训练过程而逐渐增长没有问题。
